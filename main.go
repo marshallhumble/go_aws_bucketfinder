@@ -53,26 +53,6 @@ type Config struct {
 	rateLimit time.Duration
 }
 
-// High-value permutation patterns based on real-world success rates
-var commonSuffixes = []string{
-	"", "-backup", "-backups", "-data", "-files", "-assets", "-logs", "-uploads",
-	"-staging", "-prod", "-production", "-dev", "-development", "-test", "-testing",
-	"-config", "-archive", "-static", "-media", "-storage", "-bucket", "-s3",
-	"-web", "-www", "-api", "-app", "-db", "-old", "-new", "-v1", "-v2",
-}
-
-var commonPrefixes = []string{
-	"", "backup-", "data-", "files-", "assets-", "logs-", "uploads-", "staging-",
-	"prod-", "production-", "dev-", "development-", "test-", "testing-", "config-",
-	"archive-", "static-", "media-", "storage-", "bucket-", "s3-", "web-", "www-",
-	"api-", "app-", "db-", "old-", "new-", "v1-", "v2-",
-}
-
-var domainVariations = []string{
-	"dev", "test", "staging", "prod", "production", "www", "api", "app", "admin",
-	"demo", "beta", "backup", "data", "files", "assets",
-}
-
 func main() {
 	config := parseFlags()
 
@@ -108,9 +88,11 @@ func main() {
 	var bucketNames []string
 
 	if config.keyword != "" {
-		// Generate permutations from keyword
-		bucketNames = generatePermutations(config.keyword)
-		fmt.Printf("Generated %d bucket name permutations from keyword: %s\n", len(bucketNames), config.keyword)
+		// Generate permutations from keywords (support comma-separated)
+		keywords := parseKeywords(config.keyword)
+		bucketNames = generateAllPermutations(keywords)
+		fmt.Printf("Generated %d bucket name permutations from %d keyword(s): %s\n",
+			len(bucketNames), len(keywords), strings.Join(keywords, ", "))
 	} else {
 		// Load from wordlist file
 		if _, err := os.Stat(config.wordlist); os.IsNotExist(err) {
@@ -180,7 +162,8 @@ Usage: bucket_finder [OPTIONS] [wordlist]
 	                   nc - Northern California
 	                   si - Singapore
 	                   to - Tokyo
-	--keyword, -k:     Generate bucket names from keyword permutations (mutually exclusive with wordlist)
+	--keyword, -k:     Generate bucket names from keyword permutations (supports comma or space-separated)
+	                   Examples: -k "company" or -k "acme,corp" or -k "findhelp auntbertha"
 	--workers, -w:     Number of concurrent workers (default: 10)
 	-v:               Verbose output
 
@@ -193,8 +176,11 @@ Examples:
 	# Use keyword permutations
 	bucket_finder -k "company" -w 10 -l output.log
 	
+	# Use multiple keywords
+	bucket_finder -k "acme,corp,example.com" -w 10 -l output.log
+	
 	# Use keyword with domain
-	bucket_finder -k "google.com" -w 15
+	bucket_finder -k "google.com,gcp,cloud" -w 15
 
 `, version, author)
 }
@@ -235,29 +221,91 @@ func loadWordlist(filename string) ([]string, error) {
 	return names, scanner.Err()
 }
 
-func generatePermutations(keyword string) []string {
-	keyword = strings.ToLower(strings.TrimSpace(keyword))
+func parseKeywords(keywordString string) []string {
+	var keywords []string
+
+	// First try comma separation
+	if strings.Contains(keywordString, ",") {
+		keywords = strings.Split(keywordString, ",")
+	} else {
+		// If no commas, try space separation
+		keywords = strings.Fields(keywordString)
+	}
+
+	var cleaned []string
+	for _, keyword := range keywords {
+		keyword = strings.TrimSpace(keyword)
+		if keyword != "" {
+			cleaned = append(cleaned, keyword)
+		}
+	}
+
+	return cleaned
+}
+
+func generateAllPermutations(keywords []string) []string {
+	allPermutations := make(map[string]bool)
+
+	// Debug: print what we're processing
+	if len(keywords) == 1 {
+		fmt.Printf("Processing single keyword: '%s'\n", keywords[0])
+	} else {
+		fmt.Printf("Processing %d keywords: %v\n", len(keywords), keywords)
+	}
+
+	// Generate permutations for each individual keyword
+	for i, keyword := range keywords {
+		keywordPerms := generateSingleWordPermutations(keyword)
+		fmt.Printf("Keyword '%s' generated %d permutations\n", keyword, len(keywordPerms))
+
+		for _, perm := range keywordPerms {
+			allPermutations[perm] = true
+		}
+
+		fmt.Printf("Total unique permutations after keyword %d: %d\n", i+1, len(allPermutations))
+	}
+
+	// Generate cross-keyword combinations for multi-keyword inputs
+	if len(keywords) > 1 {
+		beforeCross := len(allPermutations)
+		generateCrossKeywordPermutations(allPermutations, keywords)
+		fmt.Printf("Cross-keyword combinations added: %d (total: %d)\n",
+			len(allPermutations)-beforeCross, len(allPermutations))
+	}
+
+	// Convert to slice
+	var result []string
+	for name := range allPermutations {
+		result = append(result, name)
+	}
+
+	return result
+}
+
+// New dedicated function to process a single word through all permutation patterns
+func generateSingleWordPermutations(word string) []string {
+	word = strings.ToLower(strings.TrimSpace(word))
 	permutations := make(map[string]bool)
 
-	// Add the base keyword
-	addPermutation(permutations, keyword)
+	// Add the base word
+	addPermutation(permutations, word)
 
-	// Extract base name from keyword (for domains and complex inputs)
-	baseName := extractBaseName(keyword)
-	if baseName != keyword {
+	// Extract base name from word (for domains and complex inputs)
+	baseName := extractBaseName(word)
+	if baseName != word {
 		addPermutation(permutations, baseName)
 	}
 
-	// Generate core permutations for the main keyword
-	generateCorePermutations(permutations, keyword)
+	// Generate core permutations for the main word
+	generateCorePermutations(permutations, word)
 
 	// If it's a domain, generate domain-specific permutations
-	if strings.Contains(keyword, ".") {
-		generateDomainPermutations(permutations, keyword)
+	if strings.Contains(word, ".") {
+		generateDomainPermutations(permutations, word)
 	}
 
 	// Generate year-based permutations (limited set)
-	generateYearPermutations(permutations, keyword)
+	generateYearPermutations(permutations, word)
 
 	// Convert map to slice and filter
 	var result []string
@@ -268,6 +316,35 @@ func generatePermutations(keyword string) []string {
 	}
 
 	return result
+}
+
+func generateCrossKeywordPermutations(perms map[string]bool, keywords []string) {
+	// Generate only the most valuable combinations between keywords
+	for i, keyword1 := range keywords {
+		base1 := extractBaseName(keyword1)
+
+		for j, keyword2 := range keywords {
+			if i >= j { // Avoid duplicates and self-combinations
+				continue
+			}
+			base2 := extractBaseName(keyword2)
+
+			// Only create the most likely cross-combinations
+			addPermutation(perms, base1+"-"+base2)
+			addPermutation(perms, base2+"-"+base1)
+
+			// Add a few environment-specific cross-combinations
+			for _, env := range []string{"prod", "staging", "backup"} {
+				addPermutation(perms, base1+"-"+base2+"-"+env)
+				addPermutation(perms, base2+"-"+base1+"-"+env)
+			}
+		}
+	}
+}
+
+// Legacy function kept for compatibility - now just calls the dedicated single word function
+func generatePermutations(keyword string) []string {
+	return generateSingleWordPermutations(keyword)
 }
 
 func extractBaseName(keyword string) string {
@@ -293,27 +370,54 @@ func extractBaseName(keyword string) string {
 }
 
 func generateCorePermutations(perms map[string]bool, keyword string) {
-	// Basic prefix + suffix combinations (high-value patterns only)
-	for _, prefix := range commonPrefixes {
-		for _, suffix := range commonSuffixes {
-			name := prefix + keyword + suffix
-			addPermutation(perms, name)
+	// Only generate high-value combinations, not full cartesian product
 
-			// Add version without hyphens for some combinations
-			if strings.Contains(name, "-") && (prefix == "" || suffix == "") {
-				noDash := strings.ReplaceAll(name, "-", "")
-				addPermutation(perms, noDash)
-			}
-		}
+	// Base keyword with each suffix (most important patterns)
+	prioritySuffixes := []string{"", "-prod", "-staging", "-dev", "-backup", "-data", "-api", "-web", "-test", "-logs"}
+	for _, suffix := range prioritySuffixes {
+		addPermutation(perms, keyword+suffix)
+	}
+
+	// Base keyword with each prefix (most important patterns)
+	priorityPrefixes := []string{"backup-", "prod-", "staging-", "dev-", "api-", "web-", "test-", "s3-"}
+	for _, prefix := range priorityPrefixes {
+		addPermutation(perms, prefix+keyword)
+	}
+
+	// No-hyphen versions for high-probability patterns
+	noHyphenPatterns := []string{
+		keyword + "backup", // findhelp + backup = findhelpbackup
+		keyword + "prod",
+		keyword + "staging",
+		keyword + "dev",
+		keyword + "data",
+		keyword + "test",
+		"backup" + keyword, // backup + findhelp = backupfindhelp
+		"prod" + keyword,
+		"test" + keyword,
+		"s3" + keyword,
+	}
+
+	for _, pattern := range noHyphenPatterns {
+		addPermutation(perms, pattern)
+	}
+
+	// A few combined patterns (very selective)
+	combinedPatterns := []string{
+		"backup-" + keyword + "-prod",
+		"prod-" + keyword + "-backup",
+		keyword + "-prod-backup",
+		keyword + "-staging-backup",
+	}
+
+	for _, pattern := range combinedPatterns {
+		addPermutation(perms, pattern)
 	}
 
 	// Add numbered variations (limited)
-	for i := 1; i <= 3; i++ {
+	for i := 1; i <= 2; i++ {
 		addPermutation(perms, keyword+strconv.Itoa(i))
 		addPermutation(perms, keyword+"-"+strconv.Itoa(i))
-		if i <= 2 {
-			addPermutation(perms, keyword+"0"+strconv.Itoa(i))
-		}
 	}
 }
 
@@ -325,11 +429,11 @@ func generateDomainPermutations(perms map[string]bool, keyword string) {
 
 	domainName := parts[0]
 
-	// Only generate domain variations for the main domain part
-	for _, variation := range domainVariations {
+	// Only most common domain variations to avoid explosion
+	priorityVariations := []string{"dev", "staging", "prod", "api", "www", "backup"}
+	for _, variation := range priorityVariations {
 		addPermutation(perms, domainName+"-"+variation)
 		addPermutation(perms, variation+"-"+domainName)
-		// Skip no-hyphen versions to reduce noise
 	}
 }
 
@@ -623,12 +727,14 @@ func handleS3Error(config *Config, s3Error S3Error, bucketName, host string, dep
 			}
 
 			// Follow redirect
+			fmt.Printf("%s%sFollowing redirect...\n", workerPrefix, tabs)
 			data, err := getPage("https://"+s3Error.Endpoint, "")
 			if err != nil {
 				fmt.Printf("%s%sError following redirect: %v\n", workerPrefix, tabs, err)
 				return
 			}
 			if data != "" {
+				fmt.Printf("%s%sChecking redirected bucket:\n", workerPrefix, tabs)
 				parseResults(config, data, bucketName, s3Error.Endpoint, depth+1, workerId)
 			}
 			return
